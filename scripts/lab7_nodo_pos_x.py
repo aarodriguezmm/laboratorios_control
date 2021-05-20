@@ -4,7 +4,6 @@ import numpy as np
 from std_msgs.msg import String
 from geometry_msgs.msg import Twist, Point
 from nav_msgs.msg import Odometry
-from tf.transformations import euler_from_quaternion as efq
 
 class NodePosition():
     def __init__(self):
@@ -26,21 +25,13 @@ class NodePosition():
 
     def initParameters(self):
         #Aqui inicializaremos todas las variables del nodo
-        self.kp = 1
-        self.ki = 1
-        self.kd = 1
-	self.t = np.arange(0,20,0.1)
-        self.xc = [3]
-        self.yc = [0]
-        self.phi = [np.pi/6]
-        self.xr = list([self.xc[0]+0.2*np.cos(self.phi[0])])
-        self.yr = list([self.yc[0]+0.2*np.sin(self.phi[0])])
-	self.xrd = 4*np.cos(np.linspace(-2*np.pi,2*np.pi,len(self.t)+1))
- 	self.yrd = 2*np.sin(np.linspace(-2*np.pi,2*np.pi,len(self.t)+1))
+        self.kp = 1.58
+        self.ki = 4.46
+        self.kd = 1.11
         self.xe_prev = 0
         self.v_limit = 0.5
         self.topic_odom = "/odometry/filtered"
-        #self.topic_set = "/setpoint"
+        self.topic_set = "/setpoint"
         self.topic_vel = "/cmd_vel"
         self.topic_error = "/error"
         self.change_odom = False
@@ -50,22 +41,18 @@ class NodePosition():
 
     def callback_odom(self, msg):
         self.xr = msg.pose.pose.position.x
-        self.yr = msg.pose.pose.position.y
-        quat = msg.pose.pose.orientation
-        self.phi = efq([quat.x, quat.y, quat.z, quat.w])[2]
         self.change_odom = True
         return
 
     def callback_set(self, msg):
         self.xd = msg.x
-        self.yd = msg.y
         self.change_set = True
         return
 
     def initSubscribers(self):
         #Aqui inicializaremos los suscriptrores
         self.sub_odom = self.rospy.Subscriber(self.topic_odom, Odometry, self.callback_odom)
-        #self.sub_set = self.rospy.Subscriber(self.topic_set, Point, self.callback_set)
+        self.sub_set = self.rospy.Subscriber(self.topic_set, Point, self.callback_set)
         return
 
     def initPublishers(self):
@@ -75,45 +62,32 @@ class NodePosition():
         return
 
     def controller(self):
-        print(self.xrd[self.i])
-        self.xe = self.xrd[self.i] - self.xr
-        self.ye = self.yrd[self.i] - self.yr
-        print(self.xe)
-        print(self.ye)
-        if abs(self.xe)<=1 and abs(self.ye)<=1:
-            self.i = self.i+1
- 
-        self.e = [[self.xe],
-                  [self.ye]]
-        self.K = [[1, 0],
-                  [0, 1]]
-        self.jacob = [[np.cos(self.phi), -0.5*np.sin(self.phi)],
-                      [np.sin(self.phi),  0.5*np.cos(self.phi)]]
-        self.h = [[self.xrd[self.i+1] - self.xrd[self.i]], 
-                  [self.yrd[self.i+1] - self.yrd[self.i]]]
-        self.vc = np.matmul(np.linalg.inv(self.jacob), np.add(self.h, np.matmul(self.K, self.e)))
-        self.v = 0.5*np.tanh(0.5*self.vc[0][0])
-        self.w = 0.5*np.tanh(0.5*self.vc[1][0])
+        self.xe = self.xd - self.xr
+        if abs(self.xe) <= 0.1:
+            self.v = 0
+        else:
+            self.dxe = self.xe_prev - self.xe
+            self.ixe = self.xe_prev + self.xe
+            self.v = (self.kp*self.xe) + (self.ki*self.ixe) + (self.kd*self.dxe)
+            self.v = self.v_limit*np.tanh(self.v_limit*self.v)
+        self.xe_prev = self.xe
         return
 
     def makeVelMsg(self):
         self.msg_vel = Twist()
         self.msg_vel.linear.x = self.v
-        self.msg_vel.angular.z = self.w
         return
 
     def makeErrorMsg(self):
         self.msg_error = Point()
         self.msg_error.x = self.xe
-        self.msg_error.y = self.ye
         return
 
     def main(self):
         #Aqui desarrollaremos el codigo principal
         print("Nodo OK")
-	self.i = 0
         while not self.rospy.is_shutdown():
-            if self.change_odom:
+            if self.change_odom and self.change_set:
                 self.controller()
                 self.makeVelMsg()
                 self.makeErrorMsg()
